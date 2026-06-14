@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+datasets/
+*.wav
+*.mp4
+test_*
+
+# research papers (code-only repo)
+paper/

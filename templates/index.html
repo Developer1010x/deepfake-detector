@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deepfake Detector</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Deepfake Detector</h1>
+      <p class="sub">
+        Hybrid detector &middot; 13 interpretable forensic signals + self-supervised deep features &middot; watermark scan &middot; per-frame video analysis.
+      </p>
+    </header>
+
+    <section id="dropzone" class="dropzone">
+      <input type="file" id="file" hidden
+             accept="image/*,video/*,.heic,.heif,.avif,.mkv,.webm,.mov,.3gp">
+      <p class="dz-text">
+        <strong>Drop an image or video here</strong> or <a href="#" id="browse">browse</a><br>
+        <span class="muted">
+          images: {{ image_exts | join(', ') }}<br>
+          videos: {{ video_exts | join(', ') }}<br>
+          up to {{ max_mb }} MB
+        </span>
+      </p>
+    </section>
+
+    <section id="status" class="status hidden"></section>
+
+    <section id="result" class="result hidden">
+      <div class="result-grid">
+        <div class="preview">
+          <img id="preview-img" alt="" class="hidden">
+          <video id="preview-vid" muted playsinline class="hidden"></video>
+          <p id="preview-name" class="muted"></p>
+        </div>
+        <div class="verdict-box">
+          <div id="verdict" class="verdict"></div>
+          <div id="confidence" class="confidence"></div>
+          <div id="video-info" class="video-info hidden"></div>
+        </div>
+      </div>
+
+      <h2 id="signals-heading">Pixel-level signals</h2>
+      <table class="bars"><tbody id="signal-bars"></tbody></table>
+
+      <div id="frame-chart-section" class="hidden">
+        <h2>Per-frame combined score</h2>
+        <div class="frame-chart"><svg id="frame-chart"></svg></div>
+      </div>
+
+      <div id="patterns-section" class="hidden">
+        <h2>Pattern recognition</h2>
+        <div id="patterns-box" class="watermark-box"></div>
+      </div>
+
+      <h2>AI watermark / metadata scan</h2>
+      <div id="watermark-box" class="watermark-box"></div>
+    </section>
+
+    <footer>
+      <p class="muted small">
+        FFT spectral residual &middot; ELA &middot; Benford on DCT &middot; CFA Bayer trace &middot;
+        Wavelet kurtosis &middot; JPEG ghost &middot; noise autocorrelation &middot;
+        C2PA / PNG-chunk / EXIF watermark scan
+      </p>
+    </footer>
+  </main>
+
+<script>
+const SIGNAL_NAMES = {{ signal_names | tojson }};
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("file");
+const browse = document.getElementById("browse");
+const statusEl = document.getElementById("status");
+const resultEl = document.getElementById("result");
+const previewImg = document.getElementById("preview-img");
+const previewVid = document.getElementById("preview-vid");
+const previewName = document.getElementById("preview-name");
+const verdictEl = document.getElementById("verdict");
+const confidenceEl = document.getElementById("confidence");
+const videoInfo = document.getElementById("video-info");
+const signalsHeading = document.getElementById("signals-heading");
+const signalBars = document.getElementById("signal-bars");
+const frameChartSection = document.getElementById("frame-chart-section");
+const frameChart = document.getElementById("frame-chart");
+const watermarkBox = document.getElementById("watermark-box");
+const patternsSection = document.getElementById("patterns-section");
+const patternsBox = document.getElementById("patterns-box");
+
+const show = el => el.classList.remove("hidden");
+const hide = el => el.classList.add("hidden");
+
+browse.addEventListener("click", e => { e.preventDefault(); fileInput.click(); });
+dropzone.addEventListener("click", () => fileInput.click());
+["dragover", "dragenter"].forEach(ev =>
+  dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add("hover"); }));
+["dragleave", "drop"].forEach(ev =>
+  dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove("hover"); }));
+dropzone.addEventListener("drop", e => {
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", e => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+});
+
+function isVideo(file) {
+  return file.type.startsWith("video/") || /\.(mp4|mov|avi|mkv|webm|m4v|mpe?g|flv|wmv|3gp)$/i.test(file.name);
+}
+
+async function handleFile(file) {
+  hide(resultEl);
+  const isVid = isVideo(file);
+  statusEl.textContent = isVid
+    ? `Analyzing video ${file.name} (this may take 5-30s for longer clips) ...`
+    : `Analyzing ${file.name} ...`;
+  statusEl.className = "status working"; show(statusEl);
+
+  // preview
+  hide(previewImg); hide(previewVid);
+  if (isVid) {
+    previewVid.src = URL.createObjectURL(file);
+    show(previewVid);
+  } else {
+    previewImg.src = URL.createObjectURL(file);
+    show(previewImg);
+  }
+  previewName.textContent = file.name;
+
+  const fd = new FormData();
+  fd.append("file", file);
+  let data;
+  try {
+    const r = await fetch("/analyze", { method: "POST", body: fd });
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+    statusEl.className = "status error";
+    return;
+  }
+  hide(statusEl);
+  if (data.type === "video") renderVideo(data); else renderImage(data);
+}
+
+function renderVerdict(d) {
+  verdictEl.textContent = d.verdict;
+  verdictEl.className = "verdict " + (d.verdict.toLowerCase().includes("real") ? "real" : "fake");
+  let conf = `confidence: ${d.confidence}`;
+  if (typeof d.prob_synthetic === "number") {
+    const src = d.decision_source || (d.model ? "fusion" : "classical");
+    conf += ` · P(synthetic)=${d.prob_synthetic.toFixed(3)} [${src}]`;
+    if (d.model && d.model.mode) {
+      conf += ` · model: ${d.model.mode}/${d.model.classifier}`;
+    }
+  }
+  confidenceEl.textContent = conf;
+}
+
+function renderBars(scores, combinedKey = "combined") {
+  signalBars.innerHTML = "";
+  for (const name of SIGNAL_NAMES) {
+    const v = scores[name];
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="bar-name">${name}</td>
+      <td class="bar-cell"><div class="bar"><div class="fill" style="width:${(v*100).toFixed(0)}%"></div></div></td>
+      <td class="bar-val">${v.toFixed(3)}</td>`;
+    signalBars.appendChild(tr);
+  }
+  const c = scores[combinedKey];
+  const cb = document.createElement("tr");
+  cb.className = "combined";
+  cb.innerHTML = `
+    <td class="bar-name"><strong>combined</strong></td>
+    <td class="bar-cell"><div class="bar"><div class="fill ${c > 0.5 ? 'fake' : 'real'}" style="width:${(c*100).toFixed(0)}%"></div></div></td>
+    <td class="bar-val"><strong>${c.toFixed(3)}</strong></td>`;
+  signalBars.appendChild(cb);
+}
+
+function renderWatermark(w) {
+  let html = `<div class="wm-score ${w.score >= 0.5 ? 'wm-yes' : 'wm-no'}">
+    score ${w.score.toFixed(3)} &middot; ${w.verdict}</div>`;
+  const items = [];
+  if (w.c2pa) items.push("C2PA / Content Credentials manifest detected");
+  for (const [k, v] of Object.entries(w.png_ai_chunks || {})) {
+    items.push(`PNG <code>${k}</code> chunk: <code>${escapeHtml(v.slice(0, 200))}${v.length > 200 ? '...' : ''}</code>`);
+  }
+  for (const [k, v] of Object.entries(w.exif_ai_fields || {})) {
+    items.push(`EXIF <code>${k}</code>: <code>${escapeHtml(v)}</code>`);
+  }
+  if (w.keyword_hits && w.keyword_hits.length) {
+    items.push(`keyword hits: <code>${w.keyword_hits.slice(0, 8).map(escapeHtml).join(', ')}</code>` +
+               (w.keyword_hits.length > 8 ? ' &middot;&middot;&middot;' : ''));
+  }
+  if (w.spectral_anomaly > 0.05) {
+    items.push(`mid-band spectral anomaly: ${w.spectral_anomaly.toFixed(3)}`);
+  }
+  if (items.length) html += "<ul>" + items.map(s => `<li>${s}</li>`).join("") + "</ul>";
+  else html += `<p class="muted">No AI watermark or provenance metadata found in the file.</p>`;
+  watermarkBox.innerHTML = html;
+}
+
+function renderImage(d) {
+  renderVerdict(d);
+  hide(videoInfo);
+  signalsHeading.textContent = "Pixel-level signals";
+  renderBars(d.pixel);
+  hide(frameChartSection);
+  if (d.patterns) {
+    renderPatterns(d.patterns);
+    show(patternsSection);
+  } else {
+    hide(patternsSection);
+  }
+  renderWatermark(d.watermark);
+  show(resultEl);
+}
+
+function renderPatterns(p) {
+  const sp = p.spectral_peaks, bh = p.block_heterogeneity, lp = p.lbp;
+  const cls = p.pattern_score >= 0.4 ? "wm-yes" : "wm-no";
+  let html = `<div class="wm-score ${cls}">pattern score ${p.pattern_score.toFixed(3)}</div><ul>`;
+
+  // Spectral peaks
+  if (sp.peaks && sp.peaks.length) {
+    const peaks = sp.peaks.map(pk =>
+      `f=${pk.frequency.toFixed(3)} (${pk.prominence_sigma.toFixed(1)}σ)`).join(", ");
+    html += `<li><strong>Spectral peaks at upsampler frequencies:</strong> ${peaks}</li>`;
+  } else {
+    html += `<li>Spectral peaks: <span class="muted">none above noise threshold</span></li>`;
+  }
+
+  // Block heterogeneity
+  html += `<li><strong>Block-wise FFT heterogeneity:</strong> std=${bh.block_std.toFixed(3)} ` +
+          `across ${bh.block_scores.length} blocks ` +
+          `(${bh.score >= 0.4 ? "anomalous" : "consistent"})</li>`;
+
+  // LBP
+  html += `<li><strong>LBP uniform-code mass:</strong> ${lp.uniform_mass.toFixed(3)} ` +
+          `<span class="muted">(natural ≈ 0.90, entropy=${lp.entropy.toFixed(2)})</span></li>`;
+
+  html += "</ul>";
+  patternsBox.innerHTML = html;
+}
+
+function renderVideo(d) {
+  renderVerdict(d);
+  videoInfo.textContent =
+    `${d.sampled_frames} of ${d.total_frames} frames analyzed @ ${d.fps} fps (${d.duration_s}s clip)`;
+  show(videoInfo);
+  signalsHeading.textContent = "Pixel-level signals (averaged over sampled frames)";
+  const meanScores = { combined: d.aggregate.prob_synthetic.mean };
+  for (const n of SIGNAL_NAMES) meanScores[n] = d.aggregate[n].mean;
+  renderBars(meanScores);
+  drawFrameChart(d.per_frame);
+  show(frameChartSection);
+  hide(patternsSection);
+  renderWatermark(d.watermark);
+  show(resultEl);
+}
+
+function drawFrameChart(perFrame) {
+  while (frameChart.firstChild) frameChart.removeChild(frameChart.firstChild);
+  const W = frameChart.clientWidth || 800, H = 140;
+  const pad = { l: 36, r: 10, t: 10, b: 22 };
+  const innerW = W - pad.l - pad.r, innerH = H - pad.t - pad.b;
+  const xs = perFrame.map((_, i) => i);
+  const ys = perFrame.map(p => p.prob_synthetic);
+  const xScale = i => pad.l + (xs.length === 1 ? innerW / 2 : (i / (xs.length - 1)) * innerW);
+  const yScale = v => pad.t + innerH * (1 - v);
+
+  // Threshold line at 0.5
+  const thresh = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  thresh.setAttribute("x1", pad.l); thresh.setAttribute("x2", W - pad.r);
+  thresh.setAttribute("y1", yScale(0.5)); thresh.setAttribute("y2", yScale(0.5));
+  thresh.setAttribute("stroke", "#444"); thresh.setAttribute("stroke-dasharray", "3,3");
+  frameChart.appendChild(thresh);
+
+  // y-axis ticks
+  for (const t of [0, 0.5, 1]) {
+    const y = yScale(t);
+    const lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    lbl.setAttribute("x", 4); lbl.setAttribute("y", y + 4);
+    lbl.setAttribute("fill", "#9ba6b3"); lbl.setAttribute("font-size", "11");
+    lbl.textContent = t.toFixed(1);
+    frameChart.appendChild(lbl);
+  }
+
+  // Polyline
+  const pts = perFrame.map((p, i) => `${xScale(i)},${yScale(p.prob_synthetic)}`).join(" ");
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  line.setAttribute("points", pts);
+  line.setAttribute("fill", "none"); line.setAttribute("stroke", "#58a6ff"); line.setAttribute("stroke-width", "2");
+  frameChart.appendChild(line);
+
+  // Dots colored by verdict
+  perFrame.forEach((p, i) => {
+    const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    c.setAttribute("cx", xScale(i)); c.setAttribute("cy", yScale(p.prob_synthetic));
+    c.setAttribute("r", 3); c.setAttribute("fill", p.prob_synthetic > 0.5 ? "#f85149" : "#3fb950");
+    frameChart.appendChild(c);
+  });
+
+  // x-axis label
+  const xl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  xl.setAttribute("x", W / 2); xl.setAttribute("y", H - 4);
+  xl.setAttribute("fill", "#6e7681"); xl.setAttribute("font-size", "11");
+  xl.setAttribute("text-anchor", "middle");
+  xl.textContent = `${perFrame.length} sampled frames over time →`;
+  frameChart.appendChild(xl);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+</script>
+</body>
+</html>

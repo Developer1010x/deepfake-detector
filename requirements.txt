@@ -1,0 +1,25 @@
+# Core (classical signals, CLI, web app)
+numpy
+pillow
+opencv-python-headless
+flask
+gunicorn
+pillow-heif
+pillow-avif-plugin
+
+# Hybrid AI pipeline (deep features + learned fusion + evaluation)
+# CPU-only torch is sufficient; install via:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+scikit-learn
+joblib
+matplotlib
+
+# Audio track (synthetic-voice detection) uses only numpy + stdlib `wave`.
+# Decoding non-WAV audio and video audio-tracks requires the `ffmpeg` binary
+# (system package, not pip): apt-get install ffmpeg
+# The AI-text track is pure Python (stdlib only).
+
+# Real-dataset decoding for external validation (CIFAKE parquet -> images)
+pyarrow
