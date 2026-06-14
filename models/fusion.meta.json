@@ -1,0 +1,18 @@
+{
+  "calibrated": "sigmoid, cv=3",
+  "n_train": 504,
+  "n_real": 252,
+  "n_fake": 252,
+  "n_features": 77,
+  "config": {
+    "classifier": "gboost",
+    "mode": "fusion",
+    "spectral": true,
+    "deep_pca_dim": 64,
+    "calibrate": true,
+    "seed": 0
+  },
+  "val_auc": 0.8447,
+  "val_acc": 0.7976,
+  "val_n": 168
+}
