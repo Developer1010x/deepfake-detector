@@ -8,3 +8,9 @@ test_*
 
 # research papers (code-only repo)
 paper/
+
+# agent / project notes
+MEMORY.md
+SUMMARY.md
+CLAUDE.md
+.claude/
