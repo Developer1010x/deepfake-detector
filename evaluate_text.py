@@ -29,6 +29,7 @@ Examples
 from __future__ import annotations
 
 import argparse
+import sys
 import json
 import time
 from collections import defaultdict
@@ -39,7 +40,7 @@ import numpy as np
 import text_detect
 import text_selfsup
 
-PAPER_DIR = Path("paper")
+PAPER_DIR = Path(__file__).resolve().parent / "paper"
 
 
 # --------------------------------------------------------------------------- #
@@ -236,6 +237,9 @@ def main() -> int:
     ap.add_argument("--real", type=Path, default=None, help="labelled human dir (external)")
     ap.add_argument("--fake", type=Path, default=None, help="labelled AI dir (external)")
     args = ap.parse_args()
+    # Line-buffer stdout: these jobs run for minutes and their progress is
+    # useless if it sits in a 4 KB block buffer until the process exits.
+    sys.stdout.reconfigure(line_buffering=True)
 
     # ---- corpus -> sources -> pseudo dataset ----
     samples = text_selfsup.generate(

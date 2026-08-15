@@ -1,0 +1,23 @@
+{
+  "corpus": "text_selfsup pseudo corpus (per_source=8, window=2)",
+  "n_train": 704,
+  "n_human": 352,
+  "n_ai": 352,
+  "signal_names": [
+    "burstiness",
+    "ttr",
+    "ngram_repetition",
+    "function_word_reg",
+    "punct_diversity",
+    "rare_word_rarity",
+    "transition_density",
+    "token_entropy"
+  ],
+  "in_sample_auc": 0.8904,
+  "seed": 0,
+  "env": {
+    "scikit-learn": "1.8.0",
+    "numpy": "2.4.1",
+    "joblib": "1.5.3"
+  }
+}

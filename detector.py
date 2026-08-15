@@ -86,13 +86,23 @@ def fft_score(img: Image.Image) -> float:
     return float(np.clip(score, 0.0, 1.0))
 
 
-def ela_score(img: Image.Image, quality: int = 90) -> float:
+def ela_map(img: Image.Image, quality: int = 90) -> np.ndarray:
+    """Per-pixel Error Level Analysis field, ``(H, W, 3)`` float32.
+
+    The absolute difference between the image and a re-save at ``quality``.
+    Regions with a different compression history light up. :func:`ela_score`
+    collapses this to one number; :mod:`explain` renders it as a heatmap.
+    """
     rgb = img.convert("RGB")
     buf = io.BytesIO()
     rgb.save(buf, "JPEG", quality=quality)
     buf.seek(0)
     resaved = Image.open(buf)
-    diff = np.abs(np.asarray(rgb, dtype=np.float32) - np.asarray(resaved, dtype=np.float32))
+    return np.abs(np.asarray(rgb, dtype=np.float32) - np.asarray(resaved, dtype=np.float32))
+
+
+def ela_score(img: Image.Image, quality: int = 90) -> float:
+    diff = ela_map(img, quality=quality)
     mean = float(diff.mean())
     std = float(diff.std())
     return std / (mean + std + 1e-6)
@@ -184,23 +194,27 @@ def wavelet_score(img: Image.Image) -> float:
     return float(np.clip(1.0 - (avg_kurt - 3.0) / 20.0, 0.0, 1.0))
 
 
-def jpeg_ghost_score(
-    img: Image.Image,
-    qualities: tuple[int, ...] = (60, 70, 80, 90),
-    block: int = 16,
-) -> float:
-    """JPEG ghost (Farid 2009): re-encode at multiple qualities, measure
-    spatial inconsistency in which quality minimizes block error.
+JPEG_GHOST_QUALITIES = (60, 70, 80, 90)
 
-    A single-source image: the quality-of-best-fit field is roughly
-    constant across blocks. A spliced or generated image: different blocks
-    pick different qualities, so the index field has high spatial variance.
+
+def jpeg_ghost_field(
+    img: Image.Image,
+    qualities: tuple[int, ...] = JPEG_GHOST_QUALITIES,
+    block: int = 16,
+) -> np.ndarray | None:
+    """Per-block best-fit-quality index field (Farid 2009), or None if too small.
+
+    Shape ``(H//block, W//block)``; each cell holds the *index into*
+    ``qualities`` whose re-encoding minimises that block's squared error.
+    :func:`jpeg_ghost_score` reduces this to its spatial standard deviation;
+    :mod:`explain` renders the field itself, which is where the forensic
+    information actually lives.
     """
     rgb = np.asarray(img.convert("RGB"), dtype=np.float32)
     h, w, _ = rgb.shape
     h, w = h - h % block, w - w % block
     if h < block * 2 or w < block * 2:
-        return 0.5
+        return None
     rgb = rgb[:h, :w]
 
     errors = []
@@ -212,8 +226,24 @@ def jpeg_ghost_score(
         diff = (rgb - re) ** 2
         err = diff.reshape(h // block, block, w // block, block, 3).mean(axis=(1, 3, 4))
         errors.append(err)
-    errors = np.stack(errors, axis=0)
-    min_q_idx = errors.argmin(axis=0).astype(np.float32)
+    return np.stack(errors, axis=0).argmin(axis=0).astype(np.float32)
+
+
+def jpeg_ghost_score(
+    img: Image.Image,
+    qualities: tuple[int, ...] = JPEG_GHOST_QUALITIES,
+    block: int = 16,
+) -> float:
+    """JPEG ghost (Farid 2009): re-encode at multiple qualities, measure
+    spatial inconsistency in which quality minimizes block error.
+
+    A single-source image: the quality-of-best-fit field is roughly
+    constant across blocks. A spliced or generated image: different blocks
+    pick different qualities, so the index field has high spatial variance.
+    """
+    min_q_idx = jpeg_ghost_field(img, qualities=qualities, block=block)
+    if min_q_idx is None:
+        return 0.5
     max_std = (len(qualities) - 1) / 2.0
     return float(np.clip(min_q_idx.std() / max(max_std, 1e-8), 0.0, 1.0))
 

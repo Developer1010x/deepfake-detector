@@ -11,21 +11,71 @@
     <header>
       <h1>Deepfake Detector</h1>
       <p class="sub">
-        Hybrid detector &middot; 13 interpretable forensic signals + self-supervised deep features &middot; watermark scan &middot; per-frame video analysis.
+        Label-free multimodal forensics &middot; 13 interpretable image signals + 8 voice + 8 text
+        &middot; spatial explanation maps &middot; watermark scan &middot; per-frame video analysis.
       </p>
+      {% if model %}
+      <p class="muted small model-line">
+        image model: <code>{{ model.mode }}/{{ model.classifier }}</code>
+        &middot; n_train={{ model.n_train }}
+        {%- if model.val_auc %} &middot; held-out pseudo-AUC {{ model.val_auc }}{% endif %}
+        {%- if model.corpus %} &middot; corpus: {{ model.corpus }}{% endif %}
+      </p>
+      {% endif %}
     </header>
 
-    <section id="dropzone" class="dropzone">
-      <input type="file" id="file" hidden
-             accept="image/*,video/*,.heic,.heif,.avif,.mkv,.webm,.mov,.3gp">
-      <p class="dz-text">
-        <strong>Drop an image or video here</strong> or <a href="#" id="browse">browse</a><br>
-        <span class="muted">
-          images: {{ image_exts | join(', ') }}<br>
-          videos: {{ video_exts | join(', ') }}<br>
-          up to {{ max_mb }} MB
-        </span>
-      </p>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-panel="media-panel" role="tab">Image · Audio · Video</button>
+      <button class="tab" data-panel="text-panel" role="tab">Text</button>
+    </nav>
+
+    <section id="media-panel">
+      {% if samples %}
+      <div class="samples">
+        <span class="muted small">Try one that ships with the repo:</span>
+        {% for s in samples if s.kind != 'text' %}
+        <button class="chip" data-sample="{{ s.key }}" data-kind="{{ s.kind }}">
+          {{ s.key }} <span class="muted">· {{ s.label }}</span>
+        </button>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <section id="dropzone" class="dropzone">
+        <input type="file" id="file" hidden
+               accept="image/*,video/*,audio/*,.heic,.heif,.avif,.mkv,.webm,.mov,.3gp,.m4a,.opus">
+        <p class="dz-text">
+          <strong>Drop an image, audio clip or video here</strong> or <a href="#" id="browse">browse</a><br>
+          <span class="muted">
+            images: {{ image_exts | join(', ') }}<br>
+            audio: {{ audio_exts | join(', ') }}<br>
+            videos: {{ video_exts | join(', ') }}<br>
+            up to {{ max_mb }} MB
+          </span>
+        </p>
+      </section>
+    </section>
+
+    <section id="text-panel" class="hidden">
+      {% if samples %}
+      <div class="samples">
+        <span class="muted small">Try one that ships with the repo:</span>
+        {% for s in samples if s.kind == 'text' %}
+        <button class="chip" data-sample="{{ s.key }}" data-kind="text">
+          {{ s.key }} <span class="muted">· {{ s.label }}</span>
+        </button>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="text-box">
+        <textarea id="text-input" rows="9" spellcheck="false"
+                  placeholder="Paste a passage of at least {{ min_text_words }} words. The eight LLM signals — burstiness, type-token ratio, n-gram repetition, function-word regularity, punctuation diversity, rare-word rarity, transition density, token entropy — need real prose to measure."></textarea>
+        <div class="text-actions">
+          <span id="word-count" class="muted small">0 words</span>
+          <button id="analyze-text" class="btn">Analyze text</button>
+        </div>
+      </div>
     </section>
 
     <section id="status" class="status hidden"></section>
@@ -34,18 +84,33 @@
       <div class="result-grid">
         <div class="preview">
           <img id="preview-img" alt="" class="hidden">
-          <video id="preview-vid" muted playsinline class="hidden"></video>
+          <!-- preload + the #t=0.5 media fragment on the src make the browser
+               decode and paint a real frame; without it the preview is a black
+               rectangle until the user presses play. -->
+          <video id="preview-vid" muted playsinline preload="auto" class="hidden"></video>
+          <div id="preview-audio" class="preview-glyph hidden">&#9835;</div>
+          <div id="preview-text" class="preview-glyph hidden">&#182;</div>
           <p id="preview-name" class="muted"></p>
         </div>
         <div class="verdict-box">
           <div id="verdict" class="verdict"></div>
           <div id="confidence" class="confidence"></div>
           <div id="video-info" class="video-info hidden"></div>
+          <div id="model-error" class="model-error hidden"></div>
         </div>
       </div>
 
       <h2 id="signals-heading">Pixel-level signals</h2>
       <table class="bars"><tbody id="signal-bars"></tbody></table>
+
+      <div id="explain-section" class="hidden">
+        <h2>Where the signals fired</h2>
+        <p class="muted small explain-intro">
+          The fields these three signals compute, before they are collapsed to a
+          single number. Hot = anomalous.
+        </p>
+        <div id="explain-grid" class="explain-grid"></div>
+      </div>
 
       <div id="frame-chart-section" class="hidden">
         <h2>Per-frame combined score</h2>
@@ -57,8 +122,10 @@
         <div id="patterns-box" class="watermark-box"></div>
       </div>
 
-      <h2>AI watermark / metadata scan</h2>
-      <div id="watermark-box" class="watermark-box"></div>
+      <div id="watermark-section">
+        <h2>AI watermark / metadata scan</h2>
+        <div id="watermark-box" class="watermark-box"></div>
+      </div>
     </section>
 
     <footer>
@@ -67,11 +134,19 @@
         Wavelet kurtosis &middot; JPEG ghost &middot; noise autocorrelation &middot;
         C2PA / PNG-chunk / EXIF watermark scan
       </p>
+      <p class="muted small">
+        Verdicts inside &plusmn;0.12 of the decision boundary are reported as
+        <em>inconclusive</em> rather than forced. Not a court-admissible authenticity verdict.
+      </p>
     </footer>
   </main>
 
 <script>
 const SIGNAL_NAMES = {{ signal_names | tojson }};
+const AUDIO_SIGNAL_NAMES = {{ audio_signal_names | tojson }};
+const TEXT_SIGNAL_NAMES = {{ text_signal_names | tojson }};
+const MIN_TEXT_WORDS = {{ min_text_words }};
+
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("file");
 const browse = document.getElementById("browse");
@@ -79,21 +154,46 @@ const statusEl = document.getElementById("status");
 const resultEl = document.getElementById("result");
 const previewImg = document.getElementById("preview-img");
 const previewVid = document.getElementById("preview-vid");
+const previewAudio = document.getElementById("preview-audio");
+const previewText = document.getElementById("preview-text");
 const previewName = document.getElementById("preview-name");
 const verdictEl = document.getElementById("verdict");
 const confidenceEl = document.getElementById("confidence");
 const videoInfo = document.getElementById("video-info");
+const modelError = document.getElementById("model-error");
 const signalsHeading = document.getElementById("signals-heading");
 const signalBars = document.getElementById("signal-bars");
 const frameChartSection = document.getElementById("frame-chart-section");
 const frameChart = document.getElementById("frame-chart");
+const watermarkSection = document.getElementById("watermark-section");
 const watermarkBox = document.getElementById("watermark-box");
 const patternsSection = document.getElementById("patterns-section");
 const patternsBox = document.getElementById("patterns-box");
+const explainSection = document.getElementById("explain-section");
+const explainGrid = document.getElementById("explain-grid");
+const textInput = document.getElementById("text-input");
+const wordCount = document.getElementById("word-count");
+const analyzeTextBtn = document.getElementById("analyze-text");
 
 const show = el => el.classList.remove("hidden");
 const hide = el => el.classList.add("hidden");
 
+// ---- tabs ---------------------------------------------------------------- //
+function selectTab(panelId) {
+  document.querySelectorAll(".tab").forEach(t =>
+    t.classList.toggle("active", t.dataset.panel === panelId));
+  document.getElementById("media-panel").classList.toggle("hidden", panelId !== "media-panel");
+  document.getElementById("text-panel").classList.toggle("hidden", panelId !== "text-panel");
+}
+
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    selectTab(tab.dataset.panel);
+    hide(resultEl); hide(statusEl);
+  });
+});
+
+// ---- file input ---------------------------------------------------------- //
 browse.addEventListener("click", e => { e.preventDefault(); fileInput.click(); });
 dropzone.addEventListener("click", () => fileInput.click());
 ["dragover", "dragenter"].forEach(ev =>
@@ -107,23 +207,30 @@ fileInput.addEventListener("change", e => {
   if (e.target.files.length) handleFile(e.target.files[0]);
 });
 
-function isVideo(file) {
-  return file.type.startsWith("video/") || /\.(mp4|mov|avi|mkv|webm|m4v|mpe?g|flv|wmv|3gp)$/i.test(file.name);
+function kindOf(file) {
+  if (file.type.startsWith("video/") || /\.(mp4|mov|avi|mkv|webm|m4v|mpe?g|flv|wmv|3gp)$/i.test(file.name)) return "video";
+  if (file.type.startsWith("audio/") || /\.(wav|mp3|m4a|aac|flac|ogg|opus|wma)$/i.test(file.name)) return "audio";
+  return "image";
+}
+
+function resetPreview() {
+  [previewImg, previewVid, previewAudio, previewText].forEach(hide);
 }
 
 async function handleFile(file) {
   hide(resultEl);
-  const isVid = isVideo(file);
-  statusEl.textContent = isVid
+  const kind = kindOf(file);
+  statusEl.textContent = kind === "video"
     ? `Analyzing video ${file.name} (this may take 5-30s for longer clips) ...`
     : `Analyzing ${file.name} ...`;
   statusEl.className = "status working"; show(statusEl);
 
-  // preview
-  hide(previewImg); hide(previewVid);
-  if (isVid) {
-    previewVid.src = URL.createObjectURL(file);
+  resetPreview();
+  if (kind === "video") {
+    previewVid.src = URL.createObjectURL(file) + "#t=0.5";
     show(previewVid);
+  } else if (kind === "audio") {
+    show(previewAudio);
   } else {
     previewImg.src = URL.createObjectURL(file);
     show(previewImg);
@@ -143,27 +250,147 @@ async function handleFile(file) {
     return;
   }
   hide(statusEl);
-  if (data.type === "video") renderVideo(data); else renderImage(data);
+  if (data.type === "video") renderVideo(data);
+  else if (data.type === "audio") renderAudio(data);
+  else renderImage(data);
 }
 
-function renderVerdict(d) {
+// ---- shipped samples ----------------------------------------------------- //
+async function runSample(key, kind) {
+  hide(resultEl);
+  statusEl.textContent = kind === "video"
+    ? `Analyzing sample ${key} (video, this takes 10-30s) ...`
+    : `Analyzing sample ${key} ...`;
+  statusEl.className = "status working"; show(statusEl);
+
+  resetPreview();
+  if (kind === "video") {
+    previewVid.src = `/samples/${key}#t=0.5`; show(previewVid);
+  } else if (kind === "audio") {
+    show(previewAudio);
+  } else if (kind === "text") {
+    selectTab("text-panel");
+    show(previewText);
+  } else {
+    previewImg.src = `/samples/${key}`; show(previewImg);
+  }
+  previewName.textContent = key;
+
+  let data;
+  try {
+    const r = await fetch("/analyze_sample", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: key })
+    });
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+    statusEl.className = "status error";
+    return;
+  }
+  hide(statusEl);
+  if (data.type === "video") renderVideo(data);
+  else if (data.type === "audio") renderAudio(data);
+  else if (data.type === "text") {
+    textInput.value = data.text || "";
+    textInput.dispatchEvent(new Event("input"));   // refresh the word counter
+    renderText(data);
+  }
+  else renderImage(data);
+}
+
+document.querySelectorAll(".chip[data-sample]").forEach(btn => {
+  btn.addEventListener("click", () => runSample(btn.dataset.sample, btn.dataset.kind));
+});
+
+// ?demo=<key> runs a sample on load, so every README screenshot is reproducible
+// from a URL rather than from a scripted click.
+const demoKey = new URLSearchParams(location.search).get("demo");
+if (demoKey) {
+  const btn = document.querySelector(`.chip[data-sample="${CSS.escape(demoKey)}"]`);
+  if (btn) runSample(btn.dataset.sample, btn.dataset.kind);
+}
+
+// ---- text ---------------------------------------------------------------- //
+function countWords(s) {
+  const t = s.trim();
+  return t ? t.split(/\s+/).length : 0;
+}
+textInput.addEventListener("input", () => {
+  const n = countWords(textInput.value);
+  wordCount.textContent = `${n} word${n === 1 ? "" : "s"}` +
+    (n < MIN_TEXT_WORDS ? ` · need ${MIN_TEXT_WORDS}` : "");
+  wordCount.classList.toggle("short", n > 0 && n < MIN_TEXT_WORDS);
+});
+analyzeTextBtn.addEventListener("click", analyzeText);
+
+async function analyzeText() {
+  const text = textInput.value.trim();
+  hide(resultEl);
+  statusEl.textContent = "Analyzing text ...";
+  statusEl.className = "status working"; show(statusEl);
+  let data;
+  try {
+    const r = await fetch("/analyze_text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+    statusEl.className = "status error";
+    return;
+  }
+  hide(statusEl);
+  renderText(data);
+}
+
+// ---- shared rendering ---------------------------------------------------- //
+function verdictClass(d) {
+  if (d.inconclusive) return "unsure";
+  const v = String(d.verdict).toLowerCase();
+  if (v.includes("inconclusive")) return "unsure";
+  return (v.includes("real") || v.includes("human")) ? "real" : "fake";
+}
+
+function renderVerdict(d, probKey = "prob_synthetic", probLabel = "P(synthetic)") {
   verdictEl.textContent = d.verdict;
-  verdictEl.className = "verdict " + (d.verdict.toLowerCase().includes("real") ? "real" : "fake");
+  verdictEl.className = "verdict " + verdictClass(d);
   let conf = `confidence: ${d.confidence}`;
-  if (typeof d.prob_synthetic === "number") {
+  if (typeof d[probKey] === "number") {
     const src = d.decision_source || (d.model ? "fusion" : "classical");
-    conf += ` · P(synthetic)=${d.prob_synthetic.toFixed(3)} [${src}]`;
+    conf += ` · ${probLabel}=${d[probKey].toFixed(3)} [${src}]`;
     if (d.model && d.model.mode) {
       conf += ` · model: ${d.model.mode}/${d.model.classifier}`;
     }
   }
   confidenceEl.textContent = conf;
+
+  const warns = d.model_warnings || [];
+  if (d.model_error) {
+    modelError.textContent = `learned model unavailable — ${d.model_error}`;
+    modelError.className = "model-error";
+    show(modelError);
+  } else if (warns.length) {
+    // The artifact loaded, but its model card records different library
+    // versions than the ones running. Worth saying; not worth blocking on.
+    modelError.textContent = `model-card mismatch — ${warns.join("; ")}`;
+    modelError.className = "model-error warn";
+    show(modelError);
+  } else {
+    hide(modelError);
+  }
 }
 
-function renderBars(scores, combinedKey = "combined") {
+function renderBars(names, scores, combinedKey, combinedLabel = "combined") {
   signalBars.innerHTML = "";
-  for (const name of SIGNAL_NAMES) {
+  for (const name of names) {
     const v = scores[name];
+    if (typeof v !== "number") continue;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td class="bar-name">${name}</td>
@@ -171,52 +398,117 @@ function renderBars(scores, combinedKey = "combined") {
       <td class="bar-val">${v.toFixed(3)}</td>`;
     signalBars.appendChild(tr);
   }
+  if (combinedKey == null) return;
   const c = scores[combinedKey];
+  if (typeof c !== "number") return;
   const cb = document.createElement("tr");
   cb.className = "combined";
   cb.innerHTML = `
-    <td class="bar-name"><strong>combined</strong></td>
+    <td class="bar-name"><strong>${combinedLabel}</strong></td>
     <td class="bar-cell"><div class="bar"><div class="fill ${c > 0.5 ? 'fake' : 'real'}" style="width:${(c*100).toFixed(0)}%"></div></div></td>
     <td class="bar-val"><strong>${c.toFixed(3)}</strong></td>`;
   signalBars.appendChild(cb);
 }
 
+// Provenance (a marker somebody wrote) and circumstantial statistics are
+// rendered as two separate lists, because only the first one overrides the
+// pixel verdict — see watermark.inspect.
 function renderWatermark(w) {
-  let html = `<div class="wm-score ${w.score >= 0.5 ? 'wm-yes' : 'wm-no'}">
+  let html = `<div class="wm-score ${w.provenance ? 'wm-yes' : 'wm-no'}">
     score ${w.score.toFixed(3)} &middot; ${w.verdict}</div>`;
-  const items = [];
-  if (w.c2pa) items.push("C2PA / Content Credentials manifest detected");
+  const hard = [], soft = [];
+  if (w.c2pa) hard.push("C2PA / Content Credentials manifest detected");
   for (const [k, v] of Object.entries(w.png_ai_chunks || {})) {
-    items.push(`PNG <code>${k}</code> chunk: <code>${escapeHtml(v.slice(0, 200))}${v.length > 200 ? '...' : ''}</code>`);
+    hard.push(`PNG <code>${k}</code> chunk: <code>${escapeHtml(v.slice(0, 200))}${v.length > 200 ? '...' : ''}</code>`);
   }
   for (const [k, v] of Object.entries(w.exif_ai_fields || {})) {
-    items.push(`EXIF <code>${k}</code>: <code>${escapeHtml(v)}</code>`);
+    hard.push(`EXIF <code>${k}</code>: <code>${escapeHtml(v)}</code>`);
   }
   if (w.keyword_hits && w.keyword_hits.length) {
-    items.push(`keyword hits: <code>${w.keyword_hits.slice(0, 8).map(escapeHtml).join(', ')}</code>` +
-               (w.keyword_hits.length > 8 ? ' &middot;&middot;&middot;' : ''));
+    hard.push(`generator name in a metadata segment: <code>${w.keyword_hits.slice(0, 8).map(escapeHtml).join(', ')}</code>` +
+              (w.keyword_hits.length > 8 ? ' &middot;&middot;&middot;' : ''));
   }
+  if (w.jpeg_qt && w.jpeg_qt.matched) soft.push(escapeHtml(w.jpeg_qt.reason));
   if (w.spectral_anomaly > 0.05) {
-    items.push(`mid-band spectral anomaly: ${w.spectral_anomaly.toFixed(3)}`);
+    soft.push(`mid-band spectral anomaly: ${w.spectral_anomaly.toFixed(3)}`);
   }
-  if (items.length) html += "<ul>" + items.map(s => `<li>${s}</li>`).join("") + "</ul>";
+  if (hard.length) html += "<ul>" + hard.map(s => `<li>${s}</li>`).join("") + "</ul>";
   else html += `<p class="muted">No AI watermark or provenance metadata found in the file.</p>`;
+  if (soft.length) {
+    html += `<p class="muted wm-soft-label">Circumstantial only &mdash; these fire on
+      ordinary photographs and never override the pixel verdict:</p>` +
+      "<ul class=\"muted\">" + soft.map(s => `<li>${s}</li>`).join("") + "</ul>";
+  }
   watermarkBox.innerHTML = html;
+}
+
+function renderExplanations(maps) {
+  explainGrid.innerHTML = "";
+  if (!maps || !maps.length) { hide(explainSection); return; }
+  for (const m of maps) {
+    const card = document.createElement("figure");
+    card.className = "explain-card";
+    card.innerHTML = `
+      <img src="${m.image}" alt="${escapeHtml(m.title)}">
+      <figcaption>
+        <strong>${escapeHtml(m.title)}</strong>
+        <span class="muted small">${escapeHtml(m.caption)}</span>
+        <span class="muted small mono">range ${m.range[0]} – ${m.range[1]} ${escapeHtml(m.unit)} · spatial σ ${m.spread}</span>
+      </figcaption>`;
+    explainGrid.appendChild(card);
+  }
+  show(explainSection);
 }
 
 function renderImage(d) {
   renderVerdict(d);
   hide(videoInfo);
   signalsHeading.textContent = "Pixel-level signals";
-  renderBars(d.pixel);
+  renderBars(SIGNAL_NAMES, d.pixel, "combined");
   hide(frameChartSection);
+  renderExplanations(d.explanations);
   if (d.patterns) {
     renderPatterns(d.patterns);
     show(patternsSection);
   } else {
     hide(patternsSection);
   }
+  show(watermarkSection);
   renderWatermark(d.watermark);
+  show(resultEl);
+}
+
+function renderAudio(d) {
+  renderVerdict(d);
+  videoInfo.textContent =
+    `${d.duration_s}s clip at ${d.sample_rate} Hz · ` +
+    (d.learned_prob !== null && d.learned_prob !== undefined
+      ? `learned P=${d.learned_prob.toFixed(3)}` : "classical combiner only");
+  show(videoInfo);
+  signalsHeading.textContent = "Voice-forensic signals";
+  renderBars(d.signal_names || AUDIO_SIGNAL_NAMES,
+             { ...d.signals, combined: d.classical_combined },
+             "combined", "classical");
+  hide(frameChartSection);
+  hide(patternsSection);
+  hide(explainSection);
+  hide(watermarkSection);
+  show(resultEl);
+}
+
+function renderText(d) {
+  resetPreview();
+  show(previewText);
+  previewName.textContent = `${d.n_words} words`;
+  renderVerdict(d, "prob_ai", "P(AI)");
+  hide(videoInfo);
+  signalsHeading.textContent = "LLM-text signals";
+  renderBars(TEXT_SIGNAL_NAMES, { ...d.signals, combined: d.classical_combined },
+             "combined", "classical");
+  hide(frameChartSection);
+  hide(patternsSection);
+  hide(explainSection);
+  hide(watermarkSection);
   show(resultEl);
 }
 
@@ -249,16 +541,25 @@ function renderPatterns(p) {
 
 function renderVideo(d) {
   renderVerdict(d);
-  videoInfo.textContent =
-    `${d.sampled_frames} of ${d.total_frames} frames analyzed @ ${d.fps} fps (${d.duration_s}s clip)`;
+  // Spell out the fusion: the per-frame mean alone does not explain the verdict
+  // (temporal instability > 0.15 and the audio track are independent triggers).
+  const bits = [
+    `${d.sampled_frames} of ${d.total_frames} frames @ ${d.fps} fps (${d.duration_s}s clip)`,
+    `temporal σ=${d.temporal_std.toFixed(3)}${d.temporal_std > 0.15 ? " (unstable)" : ""}`,
+  ];
+  if (d.audio) bits.push(`audio P(synthetic)=${d.audio.prob_synthetic.toFixed(3)}`);
+  bits.push(`fused=${d.fused_prob.toFixed(3)}`);
+  videoInfo.textContent = bits.join(" · ");
   show(videoInfo);
   signalsHeading.textContent = "Pixel-level signals (averaged over sampled frames)";
   const meanScores = { combined: d.aggregate.prob_synthetic.mean };
   for (const n of SIGNAL_NAMES) meanScores[n] = d.aggregate[n].mean;
-  renderBars(meanScores);
+  renderBars(SIGNAL_NAMES, meanScores, "combined");
   drawFrameChart(d.per_frame);
   show(frameChartSection);
   hide(patternsSection);
+  hide(explainSection);
+  show(watermarkSection);
   renderWatermark(d.watermark);
   show(resultEl);
 }

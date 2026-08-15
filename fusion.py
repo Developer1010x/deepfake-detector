@@ -5,8 +5,11 @@ complementary feature families into one descriptor and trains a calibrated
 classifier on the self-supervised pseudo-labels from :mod:`selfsup`:
 
   1. **Hand-crafted forensic features** (13-d, fully interpretable) - the seven
-     statistical signals from :mod:`detector` plus the four pattern descriptors
-     from :mod:`patterns`.
+     statistical signals from :mod:`detector` plus six descriptors emitted by the
+     three pattern checks in :mod:`patterns` (each check contributes a score;
+     ``lbp_pattern`` also contributes its uniform mass and entropy, and the
+     weighted ``pattern_score`` is carried as a feature in its own right). See
+     :data:`PATTERN_NAMES` for the exact list.
   2. **Deep features** (1024-d) - the frozen dual-stream backbone embedding from
      :mod:`deep_features`, dimensionality-reduced with PCA so it does not swamp
      the hand-crafted block on small corpora.
@@ -37,15 +40,17 @@ from patterns import all_patterns
 # feature schema
 # --------------------------------------------------------------------------- #
 
+# Six descriptors from the three checks in patterns.py: one score each, plus the
+# two raw LBP statistics and the weighted pattern_score.
 PATTERN_NAMES = (
-    "spectral_peak",
-    "block_hetero",
-    "lbp",
-    "lbp_uniform_mass",
-    "lbp_entropy",
-    "pattern_score",
+    "spectral_peak",        # spectral_peak_pattern()["score"]
+    "block_hetero",         # block_heterogeneity()["score"]
+    "lbp",                  # lbp_pattern()["score"]
+    "lbp_uniform_mass",     # lbp_pattern()["uniform_mass"]
+    "lbp_entropy",          # lbp_pattern()["entropy"]
+    "pattern_score",        # weighted combination of the three
 )
-HANDCRAFTED_NAMES: tuple[str, ...] = SIGNAL_NAMES + PATTERN_NAMES  # 13 features
+HANDCRAFTED_NAMES: tuple[str, ...] = SIGNAL_NAMES + PATTERN_NAMES  # 7 + 6 = 13
 N_HANDCRAFTED = len(HANDCRAFTED_NAMES)
 
 MODE_HANDCRAFTED = "handcrafted"

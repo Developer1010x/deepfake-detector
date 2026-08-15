@@ -1,8 +1,8 @@
 {
   "calibrated": "sigmoid, cv=3",
-  "n_train": 504,
-  "n_real": 252,
-  "n_fake": 252,
+  "n_train": 720,
+  "n_real": 360,
+  "n_fake": 360,
   "n_features": 77,
   "config": {
     "classifier": "gboost",
@@ -12,7 +12,40 @@
     "calibrate": true,
     "seed": 0
   },
-  "val_auc": 0.8447,
-  "val_acc": 0.7976,
-  "val_n": 168
+  "val_auc": 0.8175,
+  "val_acc": 0.7542,
+  "val_n": 240,
+  "corpus": "corpus (160 images from Lorem Picsum (Unsplash photographs))",
+  "corpus_images": 160,
+  "corpus_sources": 160,
+  "patch": null,
+  "per_image": 3,
+  "env": {
+    "scikit-learn": "1.8.0",
+    "numpy": "2.4.1",
+    "joblib": "1.5.3",
+    "torch": "2.12.0+cpu",
+    "torchvision": "0.27.0+cpu"
+  },
+  "heldout_real_photos": {
+    "n_real": 30,
+    "n_pseudo_fake": 30,
+    "source": "fetch_corpus.py ids 160-189 (never in the training corpus)",
+    "auc": 0.717,
+    "acc_at_0.5": 0.667,
+    "false_positive_rate": 0.3,
+    "previous_artifact_for_comparison": {
+      "corpus": "128px tiles of the 4 images in samples/ (n_train=504)",
+      "auc": 0.631,
+      "acc_at_0.5": 0.617,
+      "false_positive_rate": 0.5
+    }
+  },
+  "demo_samples": {
+    "samples/fake/alpha-dog.jpg": 0.709,
+    "samples/fake/cat-astronaut.jpeg": 0.607,
+    "samples/fake/portrait.jpeg": 0.316,
+    "samples/real/iphone-photo.jpg": 0.354,
+    "note": "3 of 4 correct at t=0.5; portrait.jpeg is the known miss (modern diffusion portrait, see README 'Honest limitations')"
+  }
 }
