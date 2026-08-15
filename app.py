@@ -84,11 +84,8 @@ def _build_sample_catalog() -> dict[str, dict]:
         ("cat-astronaut", "fake/cat-astronaut.jpeg", "image", "AI image"),
         ("alpha-dog", "fake/alpha-dog.jpg", "image", "AI image"),
         ("portrait", "fake/portrait.jpeg", "image", "AI image"),
-        ("iphone-photo", "real/iphone-photo.jpg", "image", "camera photo"),
         ("real-voice", "demo/pseudo-real-voice.wav", "audio", "benign voice"),
         ("fake-voice", "demo/pseudo-fake-voice.wav", "audio", "vocoded voice"),
-        ("real-clip", "demo/pseudo-real-clip.mp4", "video", "benign clip"),
-        ("fake-clip", "demo/pseudo-fake-clip.mp4", "video", "artifact clip"),
         ("human-text", "demo/pseudo-human.txt", "text", "human prose"),
         ("ai-text", "demo/pseudo-ai.txt", "text", "LLM-style prose"),
     ]

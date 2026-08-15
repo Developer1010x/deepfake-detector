@@ -10,7 +10,7 @@ artifact-injection transforms:
     samples/demo/pseudo-ai.txt           same prose + LLM-style regularities
     samples/demo/pseudo-real-voice.wav   procedural formant speech, benign edit
     samples/demo/pseudo-fake-voice.wav   same utterance + vocoder artifacts
-    samples/demo/pseudo-real-clip.mp4    Ken-Burns pan over samples/real/, benign
+    samples/demo/pseudo-real-clip.mp4    Ken-Burns pan over the still you pass, benign
     samples/demo/pseudo-fake-clip.mp4    same pan + per-frame generation artifacts
 
 These are honest *stand-ins*, not captured media, and they are labelled as such
@@ -41,7 +41,9 @@ import selfsup
 
 HERE = Path(__file__).resolve().parent
 OUT_DIR = HERE / "samples" / "demo"
-SOURCE_IMAGE = HERE / "samples" / "real" / "iphone-photo.jpg"
+# No personal media is shipped in this repository. Supply the still yourself:
+#     python3 make_demo_media.py --still /path/to/photo.jpg
+DEFAULT_STILL = HERE / "samples" / "real" / "still.jpg"
 
 FPS = 12
 N_FRAMES = 48
@@ -192,13 +194,20 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--seconds", type=float, default=N_FRAMES / FPS)
     ap.add_argument("--out", type=Path, default=OUT_DIR)
+    ap.add_argument("--still", type=Path, default=DEFAULT_STILL,
+                    help="source photograph for the Ken-Burns clips. No personal image is\n"
+                         "shipped in this repository, so supply your own.")
     args = ap.parse_args()
     # Line-buffer stdout: these jobs run for minutes and their progress is
     # useless if it sits in a 4 KB block buffer until the process exits.
     sys.stdout.reconfigure(line_buffering=True)
 
-    if not SOURCE_IMAGE.exists():
-        print(f"ERROR: missing source still {SOURCE_IMAGE}", file=sys.stderr)
+    source_image = args.still.expanduser()
+    if not source_image.exists():
+        print(f"ERROR: no source still at {source_image}.\n"
+              f"       This repository ships no personal media. Pass your own:\n"
+              f"         python3 make_demo_media.py --still /path/to/photo.jpg",
+              file=sys.stderr)
         return 1
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -220,7 +229,7 @@ def main() -> int:
           f"artifacts: {', '.join(text_ops)})")
 
     # ---- video pair ----
-    still = np.asarray(Image.open(SOURCE_IMAGE).convert("RGB"))
+    still = np.asarray(Image.open(source_image).convert("RGB"))
     base_frames = ken_burns(still, N_FRAMES, FRAME_W, FRAME_H)
 
     rng_r = np.random.default_rng(args.seed + 11)

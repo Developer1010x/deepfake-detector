@@ -18,8 +18,8 @@ python3 make_demo_media.py
 | `pseudo-ai.txt` | The **same passage** through `inject_boilerplate` then `lexical_smoothing`, then the same benign edit. Not output from any language model. |
 | `pseudo-real-voice.wav` | 4 s of procedural formant speech from `audio_selfsup.synth_utterance`, then `benign_augment` (mild gain, a little noise, a resample round-trip) — the "camera-honest" edit. |
 | `pseudo-fake-voice.wav` | The **same utterance**, put through `griffin_lim_phase` then `band_limit`, then the same benign edit. |
-| `pseudo-real-clip.mp4` | 48 frames (12 fps) of a Ken-Burns pan over `samples/real/iphone-photo.jpg`, each frame `benign_augment`-ed, muxed with `pseudo-real-voice.wav`. |
-| `pseudo-fake-clip.mp4` | The same pan with `selfsup.make_pseudo_fake` applied per frame (upsample fingerprint, self-blend, double JPEG, spectral injection, diffusion smoothing), muxed with `pseudo-fake-voice.wav`. |
+| `pseudo-real-clip.mp4` (not shipped, generate locally) | 48 frames (12 fps) of a Ken-Burns pan over a still you supply, each frame `benign_augment`-ed, muxed with `pseudo-real-voice.wav`. |
+| `pseudo-fake-clip.mp4` (not shipped, generate locally) | The same pan with `selfsup.make_pseudo_fake` applied per frame (upsample fingerprint, self-blend, double JPEG, spectral injection, diffusion smoothing), muxed with `pseudo-fake-voice.wav`. |
 
 ## Why these artifact chains, and not random ones
 
