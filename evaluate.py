@@ -29,9 +29,13 @@ Outputs land in ``paper/``:
 
 Examples
 --------
-    python3 evaluate.py                               # 5-fold grouped CV, all modes
-    python3 evaluate.py --folds 5 --per-image 6
+    python3 fetch_corpus.py --n 160                   # a real photographic corpus
+    python3 evaluate.py --folds 5 --per-image 2       # what produced the figures
     python3 evaluate.py --real data/real --fake data/fake   # + external test
+
+``--patch`` defaults to *off* for corpora of 50+ images. Patching a 160-photo
+corpus into 128px tiles yields 15,360 pseudo-samples and hours of feature
+extraction; it exists for corpora too small to supply enough distinct sources.
 """
 
 from __future__ import annotations
@@ -63,7 +67,34 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-PAPER_DIR = Path("paper")
+HERE = Path(__file__).resolve().parent
+PAPER_DIR = HERE / "paper"
+
+#: A corpus at least this large already has plenty of independent sources.
+#: Patching it as well multiplies the sample count by ~48 (a 160-photo corpus
+#: becomes 15,360 pseudo-samples) and turns a 15-minute evaluation into an
+#: hours-long one for no statistical gain. Patching exists for *small* corpora.
+PATCH_FREE_ABOVE = 50
+
+#: Figures produced by this module, in report order.
+IMAGE_FIGURES = ("roc.png", "pr.png", "confusion.png", "scores.png",
+                 "calibration.png", "per_artifact.png")
+
+
+def default_corpus() -> list[Path]:
+    """Prefer the fetched photographic corpus, fall back to the demo samples.
+
+    ``fetch_corpus.py`` writes real photographs to ``corpus/``. Training on the
+    four images in ``samples/`` instead is what produced the original shipped
+    model, and it is not good enough - so if a real corpus is present, use it,
+    and say which one was chosen either way.
+    """
+    corpus = HERE / "corpus"
+    if corpus.is_dir() and any(corpus.glob("*.jpg")):
+        return [corpus]
+    return [HERE / "samples"]
+
+
 FIG_DIR = PAPER_DIR / "figures"
 
 
@@ -250,8 +281,11 @@ def write_markdown(results: dict, path: Path) -> None:
             if k != "confusion":
                 lines.append(f"| {k} | {v:.3f} |")
     lines += ["", "## Figures", ""]
-    for fig in sorted(FIG_DIR.glob("*.png")):
-        lines.append(f"![{fig.stem}](figures/{fig.name})")
+    # Only the figures *this* script wrote - evaluate_audio.py shares FIG_DIR, and
+    # globbing it would embed the audio ROC in the image report.
+    for name in IMAGE_FIGURES:
+        if (FIG_DIR / name).exists():
+            lines.append(f"![{Path(name).stem}](figures/{name})")
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -263,8 +297,13 @@ def write_markdown(results: dict, path: Path) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--corpus", type=Path, nargs="+", default=[Path("samples")])
-    ap.add_argument("--patch", type=int, default=128)
+    ap.add_argument("--corpus", type=Path, nargs="+", default=None,
+                    help="unlabeled corpus roots (default: corpus/ if present, "
+                         "else samples/)")
+    ap.add_argument("--patch", type=int, default=None,
+                    help="tile each corpus image into PxP patches, multiplying the "
+                         "number of independent sources; 0 disables. Default: off "
+                         f"for corpora of >= {PATCH_FREE_ABOVE} images, 128 below.")
     ap.add_argument("--per-image", type=int, default=4)
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--classifier", default="gboost",
@@ -275,6 +314,12 @@ def main() -> int:
     ap.add_argument("--real", type=Path, default=None, help="labelled real dir (external test)")
     ap.add_argument("--fake", type=Path, default=None, help="labelled fake dir (external test)")
     args = ap.parse_args()
+    # Line-buffer stdout: this job runs for minutes and its progress is useless
+    # if it sits in a 4 KB block buffer until the process exits.
+    sys.stdout.reconfigure(line_buffering=True)
+    if args.corpus is None:
+        args.corpus = default_corpus()
+    print(f"corpus roots: {', '.join(str(c) for c in args.corpus)}")
 
     have_deep = deep_features.available()
     modes = [MODE_HANDCRAFTED]
@@ -291,6 +336,9 @@ def main() -> int:
     if not paths:
         print(f"ERROR: no images under {args.corpus}", file=sys.stderr)
         return 1
+    if args.patch is None:
+        args.patch = 0 if len(paths) >= PATCH_FREE_ABOVE else 128
+        print(f"patch: {args.patch or 'off'} (auto, from {len(paths)} corpus images)")
     sources = selfsup.load_sources(paths, patch=args.patch or None)
     samples = selfsup.generate(sources, per_image=args.per_image, seed=args.seed)
     imgs = [s.image for s in samples]
@@ -372,8 +420,9 @@ def main() -> int:
     PAPER_DIR.mkdir(parents=True, exist_ok=True)
     (PAPER_DIR / "results.json").write_text(json.dumps(results, indent=2))
     write_markdown(results, PAPER_DIR / "results.md")
+    n_figs = sum((FIG_DIR / f).exists() for f in IMAGE_FIGURES)
     print(f"\nwrote {PAPER_DIR/'results.json'}, {PAPER_DIR/'results.md'}, "
-          f"and {len(list(FIG_DIR.glob('*.png')))} figures to {FIG_DIR}/")
+          f"and {n_figs} figures to {FIG_DIR}/")
     return 0
 
 

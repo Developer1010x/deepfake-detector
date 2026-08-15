@@ -16,7 +16,8 @@ optimistic. We therefore group on ``PseudoSample.source``.
 
 Examples
 --------
-    python3 train_selfsup.py                          # corpus = ./samples
+    python3 fetch_corpus.py --n 160                   # get a real photo corpus
+    python3 train_selfsup.py --patch 0 --per-image 3   # what ships in models/
     python3 train_selfsup.py --corpus /data/images --per-image 4 --classifier mlp
     python3 train_selfsup.py --mode handcrafted       # no torch needed
 """
@@ -34,6 +35,23 @@ from PIL import Image
 import deep_features
 import selfsup
 from fusion import FEATURE_MODES, MODE_FUSION, FusionConfig, FusionModel
+from pipeline import env_versions
+
+HERE = Path(__file__).resolve().parent
+
+
+def default_corpus() -> list[Path]:
+    """Prefer the fetched photographic corpus, fall back to the demo samples.
+
+    ``fetch_corpus.py`` writes real photographs to ``corpus/``. Training on the
+    four images in ``samples/`` instead is what produced the original shipped
+    model, and it is not good enough - so if a real corpus is present, use it,
+    and say which one was chosen either way.
+    """
+    corpus = HERE / "corpus"
+    if corpus.is_dir() and any(corpus.glob("*.jpg")):
+        return [corpus]
+    return [HERE / "samples"]
 
 
 def grouped_split(groups: np.ndarray, val_frac: float, seed: int) -> np.ndarray:
@@ -49,8 +67,9 @@ def grouped_split(groups: np.ndarray, val_frac: float, seed: int) -> np.ndarray:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--corpus", type=Path, nargs="+", default=[Path("samples")],
-                    help="image dirs/files used as the unlabeled corpus (default: samples/)")
+    ap.add_argument("--corpus", type=Path, nargs="+", default=None,
+                    help="image dirs/files used as the unlabeled corpus "
+                         "(default: corpus/ if fetch_corpus.py has run, else samples/)")
     ap.add_argument("--per-image", type=int, default=4,
                     help="pseudo-real (and pseudo-fake) views per source")
     ap.add_argument("--patch", type=int, default=128,
@@ -67,8 +86,13 @@ def main() -> int:
     ap.add_argument("--val-frac", type=float, default=0.25)
     ap.add_argument("--limit", type=int, default=None, help="cap corpus size")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--out", type=Path, default=Path("models/fusion.joblib"))
+    ap.add_argument("--out", type=Path, default=HERE / "models" / "fusion.joblib")
     args = ap.parse_args()
+    # Line-buffer stdout: this job runs for minutes and its progress is useless
+    # if it sits in a 4 KB block buffer until the process exits.
+    sys.stdout.reconfigure(line_buffering=True)
+    if args.corpus is None:
+        args.corpus = default_corpus()
 
     cfg = FusionConfig(
         classifier=args.classifier,
@@ -144,11 +168,36 @@ def main() -> int:
     else:
         print("held-out pseudo-val: skipped (too few validation groups)")
 
-    # 5. Persist.
+    # 5. Model card, then persist.
+    #
+    # Without this block the artifact is anonymous: a downloader cannot tell
+    # whether the .joblib they got was fitted on a real photographic corpus or
+    # on four demo images, nor which sklearn/torch pickled it. Both questions
+    # have burned this project before, so they are answered on disk.
+    model.train_meta_["corpus"] = ", ".join(_describe_corpus(c) for c in args.corpus)
+    model.train_meta_["corpus_images"] = len(paths)
+    model.train_meta_["corpus_sources"] = len(sources)
+    model.train_meta_["patch"] = args.patch or None
+    model.train_meta_["per_image"] = args.per_image
+    model.train_meta_["env"] = env_versions()
     model.save(args.out)
     print(f"\nsaved model -> {args.out}")
-    print(f"saved metadata -> {args.out.with_suffix('.meta.json')}")
+    print(f"saved model card -> {args.out.with_suffix('.meta.json')}")
     return 0
+
+
+def _describe_corpus(root: Path) -> str:
+    """Human-readable provenance for one corpus root, using its manifest if any."""
+    manifest = root / "manifest.json"
+    if manifest.is_dir() or not manifest.exists():
+        return root.name
+    try:
+        import json
+
+        m = json.loads(manifest.read_text())
+        return f"{root.name} ({m.get('n', '?')} images from {m.get('source', 'unknown')})"
+    except Exception:
+        return root.name
 
 
 if __name__ == "__main__":

@@ -1,11 +1,22 @@
-"""Flask web frontend for the classical deepfake detector.
+"""Flask web frontend and multimodal API for the deepfake detector.
 
-Accepts images (JPG, PNG, WebP, BMP, GIF, TIFF, HEIC, HEIF, AVIF, ICO) and
-videos (MP4, MOV, AVI, MKV, WebM, M4V, MPEG, MPG, FLV, WMV, 3GP). Per-frame
-analysis is run on videos with adaptive sampling.
+All four advertised modalities are reachable from the browser, not just two:
+
+  * images  (JPG, PNG, WebP, BMP, GIF, TIFF, HEIC, HEIF, AVIF, ICO) - returns the
+    seven pixel signals, the pattern panel, the watermark scan, and the spatial
+    explanation heat-maps from :mod:`explain`.
+  * audio   (WAV, MP3, M4A, AAC, FLAC, OGG, Opus, WMA) - the eight voice signals.
+  * video   (MP4, MOV, AVI, MKV, WebM, M4V, MPEG, MPG, FLV, WMV, 3GP) - per-frame
+    fusion with adaptive sampling, temporal instability, and the audio track.
+  * text    via ``POST /analyze_text`` and the Text tab - the eight LLM signals.
+
+``/analyze_sample`` runs the media that ships in ``samples/`` by catalog key, so
+``/?demo=alpha-dog`` reproduces any README screenshot from a URL.
 
 Run locally:
     python3 app.py                          # dev server on :5000
+    PORT=8080 python3 app.py                # different port
+    FLASK_DEBUG=1 python3 app.py            # Werkzeug debugger, loopback only
 
 Run for hosting:
     gunicorn -b 0.0.0.0:8000 -w 2 -t 120 app:app
@@ -19,7 +30,7 @@ import tempfile
 from pathlib import Path
 
 import cv2
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from PIL import Image, UnidentifiedImageError
 
 # Optional iPhone / modern-format support; fall through quietly if missing.
@@ -33,6 +44,7 @@ try:
 except ImportError:
     pass
 
+import pipeline
 from detector import DEFAULT_WEIGHTS, SIGNAL_NAMES
 from pipeline import (
     analyze_audio_path,
@@ -43,11 +55,12 @@ from pipeline import (
 )
 from watermark import inspect as watermark_inspect
 
-IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "bmp", "gif", "tif", "tiff",
-              "heic", "heif", "avif", "ico"}
-VIDEO_EXTS = {"mp4", "mov", "avi", "mkv", "webm", "m4v", "mpeg", "mpg",
-              "flv", "wmv", "3gp"}
-AUDIO_EXTS = {"wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "wma"}
+# The supported-format lists live in pipeline.py (with leading dots) so the CLI,
+# the batch triage and this upload allowlist cannot drift apart. Werkzeug hands
+# us a suffix without the dot, hence the strip.
+IMAGE_EXTS = {e[1:] for e in pipeline.IMAGE_EXTS}
+VIDEO_EXTS = {e[1:] for e in pipeline.VIDEO_EXTS}
+AUDIO_EXTS = {e[1:] for e in pipeline.AUDIO_EXTS}
 ALLOWED_EXTS = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS
 
 MAX_BYTES = 100 * 1024 * 1024   # 100 MB to accommodate short videos
@@ -55,6 +68,37 @@ MAX_FRAMES = 24                 # cap frames analyzed per video for responsivene
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_BYTES
+
+HERE = Path(__file__).resolve().parent
+SAMPLES_DIR = HERE / "samples"
+
+
+def _build_sample_catalog() -> dict[str, dict]:
+    """Fixed allowlist of the media that ships with the repository.
+
+    Built once at import from files on disk, so ``/analyze_sample`` never has to
+    turn a client-supplied string into a filesystem path — it only ever looks a
+    key up in this dict. Anything not listed here is simply not addressable.
+    """
+    wanted = [
+        ("cat-astronaut", "fake/cat-astronaut.jpeg", "image", "AI image"),
+        ("alpha-dog", "fake/alpha-dog.jpg", "image", "AI image"),
+        ("portrait", "fake/portrait.jpeg", "image", "AI image"),
+        ("real-voice", "demo/pseudo-real-voice.wav", "audio", "benign voice"),
+        ("fake-voice", "demo/pseudo-fake-voice.wav", "audio", "vocoded voice"),
+        ("human-text", "demo/pseudo-human.txt", "text", "human prose"),
+        ("ai-text", "demo/pseudo-ai.txt", "text", "LLM-style prose"),
+    ]
+    catalog: dict[str, dict] = {}
+    for key, rel, kind, label in wanted:
+        path = SAMPLES_DIR / rel
+        if path.exists():
+            catalog[key] = {"path": path, "kind": kind, "label": label,
+                            "filename": path.name}
+    return catalog
+
+
+SAMPLE_CATALOG = _build_sample_catalog()
 
 
 def _agg(values: list[float]) -> dict:
@@ -66,9 +110,10 @@ def _agg(values: list[float]) -> dict:
     }
 
 
-def analyze_image_file(tmp_path: str, original_name: str) -> dict:
+def analyze_image_file(tmp_path: str, original_name: str,
+                       explain: bool = True) -> dict:
     try:
-        res = analyze_path(tmp_path)
+        res = analyze_path(tmp_path, explain=explain)
     except (UnidentifiedImageError, OSError) as e:
         return {"error": f"could not decode image: {e}"}
 
@@ -77,13 +122,17 @@ def analyze_image_file(tmp_path: str, original_name: str) -> dict:
         "filename": original_name,
         "verdict": res["final_verdict"],
         "confidence": res["final_confidence"],
+        "inconclusive": res["inconclusive"],
         "prob_synthetic": res["prob_synthetic"],
         "decision_source": res["decision_source"],
         "fusion_prob": res["fusion_prob"],
         "model": model_info(),
+        "model_error": res.get("model_error"),
+        "model_warnings": res.get("model_warnings") or [],
         "pixel": {**res["signals"], "combined": res["classical_combined"],
                   "verdict": res["verdict"]},
         "patterns": res["patterns"],
+        "explanations": res.get("explanations", []),
         "watermark": res["watermark"],
     }
 
@@ -99,10 +148,15 @@ def analyze_audio_file(tmp_path: str, original_name: str) -> dict:
         "filename": original_name,
         "verdict": res["final_verdict"],
         "confidence": res["final_confidence"],
+        "inconclusive": res["inconclusive"],
         "prob_synthetic": res["prob_synthetic"],
         "decision_source": res["decision_source"],
         "learned_prob": res["learned_prob"],
+        "model_error": res.get("model_error"),
+        "model_warnings": res.get("model_warnings") or [],
         "duration_s": res["duration_s"],
+        "sample_rate": res["sample_rate"],
+        "signal_names": list(A_SIGNALS),
         "signals": {k: res["signals"][k] for k in A_SIGNALS},
         "classical_combined": res["classical_combined"],
     }
@@ -175,8 +229,10 @@ def analyze_video_file(tmp_path: str, original_name: str) -> dict:
         confidence = "medium"
 
     wm = watermark_inspect(tmp_path)
-    if wm["score"] >= 0.5:
-        verdict = "AI watermark detected (synthetic)"
+    if wm["provenance"]:
+        # Hard evidence only: the statistical half of the watermark score fires
+        # on ordinary footage and must not override the per-frame verdict.
+        verdict = "AI provenance metadata detected (synthetic)"
         confidence = "high"
 
     return {
@@ -202,14 +258,62 @@ def analyze_video_file(tmp_path: str, original_name: str) -> dict:
 
 @app.route("/")
 def index():
+    from audio_detect import SIGNAL_NAMES as A_SIGNALS
+    from text_detect import SIGNAL_NAMES as T_SIGNALS
+
     return render_template(
         "index.html",
         signal_names=SIGNAL_NAMES,
+        audio_signal_names=A_SIGNALS,
+        text_signal_names=T_SIGNALS,
         default_weights=DEFAULT_WEIGHTS,
         max_mb=MAX_BYTES // (1024 * 1024),
         image_exts=sorted(IMAGE_EXTS),
         video_exts=sorted(VIDEO_EXTS),
+        audio_exts=sorted(AUDIO_EXTS),
+        min_text_words=MIN_TEXT_WORDS,
+        model=model_info(),
+        samples=[{"key": k, **{kk: vv for kk, vv in v.items() if kk != "path"}}
+                 for k, v in SAMPLE_CATALOG.items()],
     )
+
+
+@app.route("/analyze_sample", methods=["POST"])
+def analyze_sample():
+    """Analyze one of the media files that ship with the repo, by catalog key.
+
+    Lets the UI offer "try a sample" buttons without a round-trip through an
+    upload, and makes every screenshot in the README reproducible from a URL
+    (``/?demo=cat-astronaut``).
+    """
+    data = request.get_json(silent=True) or request.form
+    entry = SAMPLE_CATALOG.get((data.get("name") or "").strip())
+    if entry is None:
+        return jsonify({"error": "unknown sample"}), 404
+
+    path = str(entry["path"])
+    if entry["kind"] == "image":
+        result = analyze_image_file(path, entry["filename"])
+    elif entry["kind"] == "audio":
+        result = analyze_audio_file(path, entry["filename"])
+    elif entry["kind"] == "text":
+        body = entry["path"].read_text()
+        result = {"type": "text", "n_words": len(body.split()),
+                  "text": body, **analyze_text(body)}
+    else:
+        result = analyze_video_file(path, entry["filename"])
+    if "error" in result:
+        return jsonify(result), 400
+    return jsonify({**result, "sample": data.get("name")})
+
+
+@app.route("/samples/<key>")
+def sample_media(key: str):
+    """Serve a catalogued sample so the UI can preview it inline."""
+    entry = SAMPLE_CATALOG.get(key)
+    if entry is None:
+        return jsonify({"error": "unknown sample"}), 404
+    return send_file(entry["path"])
 
 
 @app.route("/analyze", methods=["POST"])
@@ -241,16 +345,26 @@ def analyze():
             pass
 
 
+#: Below this, several of the eight text signals pin to a bound (ttr -> 0,
+#: ngram_repetition -> 0, transition_density -> 1) and the "verdict" is a
+#: weighted sum of saturated constants. prepare_datasets.py uses the same floor
+#: when building the HC3 evaluation set, so the demo matches the benchmark.
+MIN_TEXT_WORDS = 25
+
+
 @app.route("/analyze_text", methods=["POST"])
 def analyze_text_route():
     data = request.get_json(silent=True) or request.form
     text = (data.get("text") or "").strip()
     if not text:
         return jsonify({"error": "no text provided"}), 400
-    if len(text.split()) < 15:
-        return jsonify({"error": "need at least ~15 words for a reliable verdict"}), 400
+    n_words = len(text.split())
+    if n_words < MIN_TEXT_WORDS:
+        return jsonify({"error": f"need at least {MIN_TEXT_WORDS} words for a "
+                                 f"meaningful verdict (got {n_words}); below that "
+                                 f"several signals saturate at their bounds"}), 400
     res = analyze_text(text)
-    return jsonify({"type": "text", "n_words": len(text.split()), **res})
+    return jsonify({"type": "text", "n_words": n_words, **res})
 
 
 @app.errorhandler(413)
@@ -260,4 +374,9 @@ def too_large(_e):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    # The Werkzeug interactive debugger is remote code execution for anyone who
+    # can reach the port, so it is opt-in (FLASK_DEBUG=1) and, when enabled,
+    # bound to loopback only. Default: off, and bound to 0.0.0.0 for LAN demos.
+    debug = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+    host = os.environ.get("HOST", "127.0.0.1" if debug else "0.0.0.0")
+    app.run(host=host, port=port, debug=debug)

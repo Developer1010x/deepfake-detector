@@ -65,6 +65,29 @@ def available() -> bool:
 
 
 @functools.lru_cache(maxsize=1)
+def weights_cached() -> bool:
+    """True if the ImageNet backbone weights are already in the torch hub cache.
+
+    The first deep-stream call otherwise downloads ~45 MB. Callers that must not
+    touch the network (see ``pipeline.offline``) check this before building the
+    backbone, so an offline run degrades to the classical path *loudly* instead
+    of hanging on a socket.
+    """
+    if not available():
+        return False
+    try:
+        from pathlib import Path
+
+        import torch
+        from torchvision.models import ResNet18_Weights
+
+        url = ResNet18_Weights.IMAGENET1K_V1.url
+        return (Path(torch.hub.get_dir()) / "checkpoints" / url.rsplit("/", 1)[-1]).exists()
+    except Exception:
+        return False
+
+
+@functools.lru_cache(maxsize=1)
 def _backbone():
     """Build and cache the frozen feature backbone.
 

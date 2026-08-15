@@ -91,6 +91,27 @@ def spectral_peak_pattern(img: Image.Image) -> dict:
     return {"score": float(np.clip(total_prom / 20.0, 0.0, 1.0)), "peaks": peaks}
 
 
+def block_fft_field(img: Image.Image, n_blocks: int = 4) -> np.ndarray | None:
+    """``(n_blocks, n_blocks)`` grid of per-tile FFT scores, or None if too small.
+
+    This is the raw spatial field behind :func:`block_heterogeneity`, which keeps
+    only its standard deviation. :mod:`explain` renders the field, so a viewer
+    can see *which* region of the image has anomalous spectral statistics rather
+    than being told a single number.
+    """
+    g = _grayscale(img)
+    h, w = g.shape
+    bh, bw = h // n_blocks, w // n_blocks
+    if bh < 32 or bw < 32:
+        return None
+    field = np.zeros((n_blocks, n_blocks), dtype=np.float64)
+    for i in range(n_blocks):
+        for j in range(n_blocks):
+            tile = g[i * bh : (i + 1) * bh, j * bw : (j + 1) * bw]
+            field[i, j] = fft_score(Image.fromarray(tile.astype(np.uint8)))
+    return field
+
+
 def block_heterogeneity(img: Image.Image, n_blocks: int = 4) -> dict:
     """Spatial heterogeneity of per-block FFT scores.
 
@@ -100,17 +121,10 @@ def block_heterogeneity(img: Image.Image, n_blocks: int = 4) -> dict:
     spatially varying statistics. Score = std of per-block FFT scores,
     rescaled to [0, 1].
     """
-    g = _grayscale(img)
-    h, w = g.shape
-    bh, bw = h // n_blocks, w // n_blocks
-    if bh < 32 or bw < 32:
+    field = block_fft_field(img, n_blocks=n_blocks)
+    if field is None:
         return {"score": 0.0, "block_scores": [], "block_std": 0.0}
-
-    block_scores = []
-    for i in range(n_blocks):
-        for j in range(n_blocks):
-            tile = g[i * bh : (i + 1) * bh, j * bw : (j + 1) * bw]
-            block_scores.append(fft_score(Image.fromarray(tile.astype(np.uint8))))
+    block_scores = field.ravel().tolist()
     std = float(np.std(block_scores))
     return {
         "score": float(np.clip(std * 5.0, 0.0, 1.0)),

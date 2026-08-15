@@ -1,16 +1,23 @@
 __pycache__/
 *.pyc
+.pytest_cache/
 .venv/
 datasets/
 *.wav
 *.mp4
-test_*
+# ...except the small procedurally-generated demo clips that ship with the repo
+!samples/demo/*.wav
+!samples/demo/*.mp4
 
-# research papers (code-only repo)
-paper/
+# paper/ is COMMITTED, deliberately. evaluate*.py write the figures the README
+# embeds and the metric tables it quotes; excluding them (as this file used to)
+# left a repository whose entire output is visual showing no images at all.
 
 # agent / project notes
 MEMORY.md
 SUMMARY.md
 CLAUDE.md
 .claude/
+
+# downloaded training corpus (see fetch_corpus.py; manifest records provenance)
+corpus/

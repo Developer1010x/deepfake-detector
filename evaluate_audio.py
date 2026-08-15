@@ -115,6 +115,9 @@ def main() -> int:
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
+    # Line-buffer stdout: these jobs run for minutes and their progress is
+    # useless if it sits in a 4 KB block buffer until the process exits.
+    sys.stdout.reconfigure(line_buffering=True)
 
     corpus = asup.synth_corpus(args.sources, seed=args.seed)
     samples = asup.generate(corpus, per_source=args.per_source, seed=args.seed)
