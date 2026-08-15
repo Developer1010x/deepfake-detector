@@ -1,0 +1,108 @@
+{
+  "protocol": "leave-source-out 5-fold GroupKFold (classifier=GradientBoosting+sigmoid-calib, seed=0)",
+  "corpus": {
+    "n_paragraphs": 20,
+    "n_sources": 44,
+    "n_samples": 352,
+    "n_human": 176,
+    "n_ai": 176
+  },
+  "models": {
+    "classical (fixed weights)": {
+      "auc": 0.6632069989669422,
+      "ap": 0.6666729557466253,
+      "accuracy": 0.5170454545454546,
+      "precision": 0.7142857142857143,
+      "recall": 0.056818181818181816,
+      "f1": 0.10526315789473684,
+      "brier": 0.27417961240425304,
+      "confusion": {
+        "tn": 172,
+        "fp": 4,
+        "fn": 166,
+        "tp": 10
+      }
+    },
+    "learned (handcrafted)": {
+      "auc": 0.7595396435950412,
+      "ap": 0.8106688902209871,
+      "accuracy": 0.7244318181818182,
+      "precision": 0.7762237762237763,
+      "recall": 0.6306818181818182,
+      "f1": 0.6959247648902821,
+      "brier": 0.18300416335395528,
+      "confusion": {
+        "tn": 144,
+        "fp": 32,
+        "fn": 65,
+        "tp": 111
+      }
+    }
+  },
+  "fold_auc": {
+    "learned (handcrafted)": [
+      0.7064043209876543,
+      0.8368055555555555,
+      0.7345679012345678,
+      0.693672839506173,
+      0.82763671875
+    ]
+  },
+  "per_artifact": {
+    "flatten_burstiness": [
+      0.45652173913043476,
+      46
+    ],
+    "inject_boilerplate": [
+      0.9649122807017544,
+      57
+    ],
+    "lexical_smoothing": [
+      0.48,
+      50
+    ],
+    "regularize_punctuation": [
+      0.453125,
+      64
+    ],
+    "inject_repetition": [
+      0.9814814814814815,
+      54
+    ]
+  },
+  "external": {
+    "source": "datasets/hc3/human/datasets/hc3/ai",
+    "n_human": 300,
+    "n_ai": 300,
+    "learned": {
+      "auc": 0.8251277777777777,
+      "ap": 0.7514731649902753,
+      "accuracy": 0.725,
+      "precision": 0.6483516483516484,
+      "recall": 0.9833333333333333,
+      "f1": 0.7814569536423841,
+      "brier": 0.20368026213268678,
+      "confusion": {
+        "tn": 140,
+        "fp": 160,
+        "fn": 5,
+        "tp": 295
+      }
+    },
+    "classical": {
+      "auc": 0.9596555555555556,
+      "ap": 0.947689603868374,
+      "accuracy": 0.6216666666666667,
+      "precision": 0.974025974025974,
+      "recall": 0.25,
+      "f1": 0.3978779840848806,
+      "brier": 0.188832118335461,
+      "confusion": {
+        "tn": 298,
+        "fp": 2,
+        "fn": 225,
+        "tp": 75
+      }
+    }
+  }
+}

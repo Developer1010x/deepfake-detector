@@ -21,5 +21,12 @@ matplotlib
 # (system package, not pip): apt-get install ffmpeg
 # The AI-text track is pure Python (stdlib only).
 
-# Real-dataset decoding for external validation (CIFAKE parquet -> images)
+# Real-dataset decoding for external validation (CIFAKE parquet -> images).
+# prepare_datasets.py reads the parquet through pandas, which needs pyarrow as
+# its parquet engine - both are required, not just pyarrow.
 pyarrow
+pandas
+
+# Test suite (property tests over the hand-rolled DSP primitives; needs only
+# numpy + pillow beyond this).
+pytest

@@ -12,6 +12,8 @@ ranks well (high AUC) but is poorly calibrated at the 0.5 threshold.
 from __future__ import annotations
 
 import argparse
+import sys
+import json
 from pathlib import Path
 
 import joblib
@@ -19,8 +21,9 @@ import numpy as np
 
 import text_detect as td
 import text_selfsup
+from pipeline import CLASSICAL_DEPS, env_versions
 
-MODEL_PATH = Path("models/text.joblib")
+MODEL_PATH = Path(__file__).resolve().parent / "models" / "text.joblib"
 
 
 def build_model(seed: int):
@@ -40,6 +43,9 @@ def main() -> int:
     ap.add_argument("--window", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
+    # Line-buffer stdout: these jobs run for minutes and their progress is
+    # useless if it sits in a 4 KB block buffer until the process exits.
+    sys.stdout.reconfigure(line_buffering=True)
 
     samples = text_selfsup.generate(per_source=args.per_source, seed=args.seed,
                                     window=args.window)
@@ -55,7 +61,24 @@ def main() -> int:
                  "n_train": len(samples), "seed": args.seed}, MODEL_PATH)
     from sklearn.metrics import roc_auc_score
     auc = float(roc_auc_score(y, clf.predict_proba(X)[:, 1]))
+
+    # Model card: what this artifact was fitted on and with which libraries.
+    # pipeline.load_text_model re-checks the `env` block and reports mismatches
+    # instead of silently downgrading to the classical combiner.
+    card = {
+        "corpus": f"text_selfsup pseudo corpus (per_source={args.per_source}, "
+                  f"window={args.window})",
+        "n_train": len(samples),
+        "n_human": int((y == 0).sum()),
+        "n_ai": int((y == 1).sum()),
+        "signal_names": list(td.SIGNAL_NAMES),
+        "in_sample_auc": round(auc, 4),
+        "seed": args.seed,
+        "env": env_versions(CLASSICAL_DEPS),
+    }
+    MODEL_PATH.with_suffix(".meta.json").write_text(json.dumps(card, indent=2))
     print(f"saved {MODEL_PATH} (in-sample AUC={auc:.3f})")
+    print(f"saved model card -> {MODEL_PATH.with_suffix('.meta.json')}")
     return 0
 
 

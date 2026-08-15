@@ -1,0 +1,72 @@
+{
+  "protocol": "leave-source-out 5-fold GroupKFold (gboost, seed=0)",
+  "corpus": {
+    "n_sources": 40,
+    "n_samples": 320,
+    "n_real": 160,
+    "n_fake": 160
+  },
+  "models": {
+    "classical (fixed weights)": {
+      "auc": 0.454765625,
+      "ap": 0.5130483723346769,
+      "accuracy": 0.571875,
+      "precision": 0.6666666666666666,
+      "recall": 0.2875,
+      "f1": 0.4017467248908297,
+      "brier": 0.26439284929533013,
+      "confusion": {
+        "tn": 137,
+        "fp": 23,
+        "fn": 114,
+        "tp": 46
+      }
+    },
+    "learned (handcrafted)": {
+      "auc": 0.9574609375,
+      "ap": 0.9676599200391902,
+      "accuracy": 0.909375,
+      "precision": 0.958041958041958,
+      "recall": 0.85625,
+      "f1": 0.9042904290429042,
+      "brier": 0.07380663778029986,
+      "confusion": {
+        "tn": 154,
+        "fp": 6,
+        "fn": 23,
+        "tp": 137
+      }
+    }
+  },
+  "fold_auc": {
+    "learned (handcrafted)": [
+      0.95703125,
+      0.9775390625,
+      0.9580078125,
+      0.931640625,
+      0.955078125
+    ]
+  },
+  "per_artifact": {
+    "harmonic_comb": [
+      0.9130434782608695,
+      46
+    ],
+    "noise_gate": [
+      0.7916666666666666,
+      48
+    ],
+    "mel_oversmooth": [
+      0.9811320754716981,
+      53
+    ],
+    "griffin_lim_phase": [
+      0.9444444444444444,
+      54
+    ],
+    "band_limit": [
+      0.8409090909090909,
+      44
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "corpus": "audio_selfsup.synth_corpus (60 procedural utterances, per_source=5) - NO recorded speech, both classes are synthesised",
+  "n_train": 600,
+  "n_real": 300,
+  "n_fake": 300,
+  "signal_names": [
+    "spectral_flatness",
+    "hf_deficit",
+    "phase_incoherence",
+    "jitter_deficit",
+    "shimmer_deficit",
+    "hnr_anomaly",
+    "modulation_anomaly",
+    "noisefloor_regularity"
+  ],
+  "in_sample_auc": 0.9997,
+  "seed": 0,
+  "env": {
+    "scikit-learn": "1.8.0",
+    "numpy": "2.4.1",
+    "joblib": "1.5.3"
+  }
+}

@@ -18,8 +18,11 @@ import numpy as np
 
 from audio_detect import TARGET_SR, load_wav
 
+#: WAV is the one container this module reads without shelling out to ffmpeg.
+#: The full list of audio extensions the tool accepts lives in
+#: ``pipeline.AUDIO_EXTS`` - one definition, used by the CLI, the web upload
+#: allowlist and the batch walker alike.
 WAV_EXTS = {".wav"}
-AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"}
 
 
 def have_ffmpeg() -> bool:

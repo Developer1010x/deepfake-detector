@@ -1,4 +1,17 @@
-"""CLI: `python cli.py image PATH` or `python cli.py video PATH [--every N]`."""
+"""Unified CLI for every modality.
+
+    python3 cli.py image     PATH [--explain DIR]
+    python3 cli.py audio     PATH
+    python3 cli.py video     PATH [--every N]
+    python3 cli.py text      PATH | -
+    python3 cli.py watermark PATH
+    python3 cli.py batch     DIR  [--csv out.csv] [--top N]
+
+Model artifacts resolve relative to the source tree (see ``pipeline.HERE``), so
+these work from any working directory. Probabilities within
+``pipeline.INCONCLUSIVE_MARGIN`` of 0.5 are reported as *inconclusive* rather
+than forced into a real/synthetic call.
+"""
 
 from __future__ import annotations
 
@@ -10,19 +23,15 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from detector import SIGNAL_NAMES, detect
+from detector import SIGNAL_NAMES
 from pipeline import analyze_path, model_info
 from watermark import inspect as watermark_inspect
 
 
-def _print_scores(r: dict) -> None:
-    for name in SIGNAL_NAMES:
-        print(f"  {name:11s}: {r[name]:.3f}")
-    print(f"  combined   : {r['combined']:.3f}  -> {r['verdict']}")
-
-
 def _print_watermark(w: dict) -> None:
     print(f"  watermark  : {w['score']:.3f}  -> {w['verdict']}")
+    if w.get("jpeg_qt", {}).get("matched"):
+        print(f"    - circumstantial: {w['jpeg_qt']['reason']}")
     if w["c2pa"]:
         print("    - C2PA / Content Credentials manifest detected")
     if w["png_ai_chunks"]:
@@ -36,10 +45,34 @@ def _print_watermark(w: dict) -> None:
         print(f"    - keyword hits: {', '.join(w['keyword_hits'][:8])}"
               + (" ..." if len(w["keyword_hits"]) > 8 else ""))
     if w["spectral_anomaly"] > 0.05:
-        print(f"    - mid-band spectral anomaly: {w['spectral_anomaly']:.3f}")
+        print(f"    - circumstantial: mid-band spectral anomaly "
+              f"{w['spectral_anomaly']:.3f}")
 
 
-def analyze_image(path: Path) -> int:
+def _report_model_state(res: dict) -> None:
+    """Print the learned-model line, distinguishing 'untrained' from 'broken'."""
+    from pipeline import MODEL_PATH
+
+    mi = model_info()
+    if res["fusion_prob"] is not None and mi:
+        print(f"  FUSION P(synthetic): {res['fusion_prob']:.3f}  "
+              f"[{mi['mode']}/{mi['classifier']} model]")
+        for w in mi.get("env_warnings", []):
+            print(f"  WARNING: model-card mismatch -> {w}", file=sys.stderr)
+    elif res.get("model_error"):
+        # A present-but-unusable artifact is a *failure*, not an untrained state.
+        print(f"  ERROR: {MODEL_PATH} exists but could not be used:\n"
+              f"         {res['model_error']}", file=sys.stderr)
+        print("  (falling back to the classical combiner)")
+    elif not MODEL_PATH.exists():
+        print(f"  (no trained fusion model at {MODEL_PATH} -> using classical "
+              "combiner; run train_selfsup.py)")
+    else:
+        print("  (fusion model loaded but returned no probability -> classical "
+              "combiner)")
+
+
+def analyze_image(path: Path, explain_dir: Path | None = None) -> int:
     if not path.exists():
         print(f"file not found: {path}", file=sys.stderr)
         return 1
@@ -52,16 +85,17 @@ def analyze_image(path: Path) -> int:
     print(f"  pattern    : {res['patterns']['pattern_score']:.3f}")
     print(f"  classical  : {res['classical_combined']:.3f}")
 
-    # learned fusion verdict
-    mi = model_info()
-    if res["fusion_prob"] is not None and mi:
-        print(f"  FUSION P(synthetic): {res['fusion_prob']:.3f}  "
-              f"[{mi['mode']}/{mi['classifier']} model]")
-    else:
-        print("  (no trained fusion model -> using classical combiner; "
-              "run train_selfsup.py)")
+    _report_model_state(res)
     _print_watermark(res["watermark"])
     print(f"  => {res['final_verdict']}  (confidence: {res['final_confidence']})")
+
+    if explain_dir is not None:
+        from PIL import Image as _Image
+
+        from explain import save_explanations
+
+        written = save_explanations(_Image.open(path), explain_dir)
+        print(f"  explanation maps -> {', '.join(str(p) for p in written)}")
     return 0
 
 
@@ -149,9 +183,13 @@ def analyze_audio(path: Path) -> int:
     print(f"  classical  : {res['classical_combined']:.3f}")
     if res["learned_prob"] is not None:
         print(f"  LEARNED P(synthetic): {res['learned_prob']:.3f}  [audio.joblib]")
+    elif res.get("model_error"):
+        print(f"  ERROR: models/audio.joblib could not be used:\n"
+              f"         {res['model_error']}", file=sys.stderr)
+        print("  (falling back to the classical combiner)")
     else:
         print("  (no trained audio model -> classical combiner; run train_audio.py)")
-    print(f"  duration   : {res['duration_s']}s")
+    print(f"  duration   : {res['duration_s']}s @ {res['sample_rate']} Hz")
     print(f"  => {res['final_verdict']}  (confidence: {res['final_confidence']})")
     return 0
 
@@ -175,6 +213,63 @@ def analyze_text(path: Path) -> int:
     return 0
 
 
+def run_batch(root: Path, csv_path: str | None, top: int, recursive: bool,
+              kinds: tuple[str, ...], limit: int, watermark: bool) -> int:
+    """Rank a folder of unlabelled media by P(synthetic) — forensic triage."""
+    import batch as batch_mod
+    from pipeline import MODEL_PATH, load_model
+
+    if not root.exists():
+        print(f"path not found: {root}", file=sys.stderr)
+        return 1
+
+    paths = batch_mod.collect(root, recursive=recursive, kinds=kinds)
+    skipped_video = (batch_mod.count_skipped_videos(root, recursive=recursive)
+                     if "video" not in kinds else 0)
+    if limit:
+        paths = paths[:limit]
+    if not paths:
+        print(f"no {'/'.join(kinds)} files under {root}", file=sys.stderr)
+        return 1
+
+    model = load_model()
+    if model is not None:
+        mi = model_info() or {}
+        print(f"model: {mi.get('mode', '?')}/{mi.get('classifier', '?')} "
+              f"({MODEL_PATH.name}, n_train={mi.get('n_train', '?')})")
+    else:
+        from pipeline import load_error
+
+        err = load_error()
+        print(f"model: none — using the training-free classical combiner"
+              + (f"\n  ({err})" if err else ""))
+
+    print(f"scanning {len(paths)} files under {root}"
+          + (f"  (+{skipped_video} video skipped — use `cli.py video`)"
+             if skipped_video else ""))
+
+    def progress(done: int, total: int, path: Path) -> None:
+        print(f"\r  [{done:>4}/{total}] {path.name[:48]:<48}",
+              end="", file=sys.stderr, flush=True)
+
+    rows = batch_mod.triage(paths, model=model, watermark=watermark,
+                            progress=progress)
+    print("\r" + " " * 70 + "\r", end="", file=sys.stderr)
+
+    print()
+    print(batch_mod.format_table(rows, top=top))
+    s = batch_mod.summarise(rows)
+    shown = min(top, s["total"] - s["errors"])
+    print(f"\n{shown} of {s['total']} shown  ·  flagged {s['flagged']} "
+          f"(watermarked {s['watermarked']})  ·  inconclusive {s['inconclusive']}"
+          f"  ·  likely real {s['real']}  ·  unreadable {s['errors']}")
+    if csv_path:
+        batch_mod.write_csv(rows, csv_path)
+        if csv_path != "-":
+            print(f"wrote {len(rows)} ranked rows to {csv_path}")
+    return 0
+
+
 def analyze_watermark(path: Path) -> int:
     if not path.exists():
         print(f"file not found: {path}", file=sys.stderr)
@@ -187,12 +282,16 @@ def analyze_watermark(path: Path) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        description="Classical deepfake detector (7 signals + AI watermark scan)"
+        description="Label-free multimodal synthetic-media detector "
+                    "(image / audio / video / text + watermark scan)"
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pi = sub.add_parser("image", help="full analysis on a single image")
     pi.add_argument("path", type=Path)
+    pi.add_argument("--explain", type=Path, default=None, metavar="DIR",
+                    help="also write spatial explanation heat-maps (ELA, JPEG "
+                         "ghost, spectral heterogeneity) as PNGs into DIR")
 
     pv = sub.add_parser("video", help="analyze a video")
     pv.add_argument("path", type=Path)
@@ -207,15 +306,42 @@ def main() -> int:
     pw = sub.add_parser("watermark", help="watermark / metadata scan only")
     pw.add_argument("path", type=Path)
 
+    pb = sub.add_parser(
+        "batch", help="rank a folder of unlabelled media by P(synthetic)",
+        description="Forensic triage: score every image and audio file under "
+                    "DIR and print them ranked, most synthetic first. Videos "
+                    "are counted but not scored (use `cli.py video`).")
+    pb.add_argument("path", type=Path, metavar="DIR")
+    pb.add_argument("--csv", default=None, metavar="FILE",
+                    help="write the full ranked table as CSV ('-' for stdout)")
+    pb.add_argument("--top", type=int, default=20,
+                    help="rows to print (default 20; the CSV always has all)")
+    pb.add_argument("--kind", choices=["image", "audio", "both"], default="both",
+                    help="which modalities to score (default: both)")
+    pb.add_argument("--no-recursive", action="store_true",
+                    help="do not descend into sub-directories")
+    pb.add_argument("--limit", type=int, default=0,
+                    help="stop after N files (0 = no limit)")
+    pb.add_argument("--no-watermark", action="store_true",
+                    help="skip the per-file provenance/watermark scan (faster)")
+
     args = p.parse_args()
+    # Line-buffer stdout so that piping to a file or a pager keeps the progress
+    # ticker (stderr) and the report (stdout) in the order they were written.
+    sys.stdout.reconfigure(line_buffering=True)
     if args.cmd == "image":
-        return analyze_image(args.path)
+        return analyze_image(args.path, explain_dir=args.explain)
     if args.cmd == "video":
         return analyze_video(args.path, args.every)
     if args.cmd == "audio":
         return analyze_audio(args.path)
     if args.cmd == "text":
         return analyze_text(args.path)
+    if args.cmd == "batch":
+        kinds = (("image", "audio") if args.kind == "both" else (args.kind,))
+        return run_batch(args.path, args.csv, args.top,
+                         recursive=not args.no_recursive, kinds=kinds,
+                         limit=args.limit, watermark=not args.no_watermark)
     return analyze_watermark(args.path)
 
 
