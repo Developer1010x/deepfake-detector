@@ -1,5 +1,7 @@
 # Deepfake Detector
 
+[![CI](https://github.com/Developer1010x/deepfake-detector/actions/workflows/ci.yml/badge.svg)](https://github.com/Developer1010x/deepfake-detector/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE) ![Python: NumPy DSP](https://img.shields.io/badge/Python-NumPy_DSP-3776AB?logo=python&logoColor=white) ![Runs on: CPU only](https://img.shields.io/badge/Runs_on-CPU_only-555555) [![IEEE CSITSS 2026: accepted](https://img.shields.io/badge/IEEE_CSITSS_2026-accepted-00629B)](https://sprajwallnarayana.vercel.app/#research)
+
 Label-free, CPU-only detection of synthetic media across four modalities: images,
 audio (synthetic or cloned voice), text (LLM-generated) and video.
 
@@ -110,3 +112,7 @@ not: a production authenticity guarantee, or a court-admissible verdict.
 ## License
 
 MIT. See `LICENSE`.
+
+---
+
+Built by **S. Prajwall Narayana** · [Portfolio](https://sprajwallnarayana.vercel.app) · [GitHub](https://github.com/Developer1010x)
